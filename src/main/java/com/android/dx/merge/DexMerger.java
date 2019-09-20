@@ -96,7 +96,7 @@ public final class DexMerger {
     private int compactWasteThreshold = 1024 * 1024; // 1MiB
 
     /** the blade stuff */
-    private List<Injection> injections;
+    private List<Injection> injections = new ArrayList<>();
 
     public DexMerger(Dex[] dexes, CollisionPolicy collisionPolicy, DxContext context) throws IOException {
         this(dexes, collisionPolicy, context, new WriterSizes(dexes));
@@ -1329,6 +1329,7 @@ public final class DexMerger {
             return false;
 
         ClassDef  shadowClassDef = DexUtils.findClass(info.shadowDex, info.shadowClassName);
+        assert shadowClassDef != null;
         ClassData shadowClassData = info.shadowDex.readClassData(shadowClassDef);
 
         List<FieldInfo> staticFields = moveFields(in, indexMap, classData.getStaticFields(), info, shadowClassData.getStaticFields());
@@ -1340,23 +1341,37 @@ public final class DexMerger {
         // Hook method <=> Original method placeholder
         swapMethod(info, directMethods, virtualMethods);
 
-        // Remove constructors and abstract methods
-        Iterator<MethodInfo> i = directMethods.iterator();
-        while (i.hasNext()) {
-            MethodInfo mi = i.next();
-            if (mi.getDescriptor().startsWith("<init>"))
-                i.remove();
-            if (AccessFlags.isAbstract(mi.method.getAccessFlags()))
-                i.remove();
+        // remove conflict method
+        List<List<MethodInfo>> allMethodInfos = new ArrayList<>();
+        allMethodInfos.add(directMethods);
+        allMethodInfos.add(virtualMethods);
+        ClassData.Method[] allOriginalMethods = classData.allMethods();
+
+        for (List<MethodInfo> mis : allMethodInfos) {
+            Iterator<MethodInfo> it = mis.iterator();
+            while (it.hasNext()) {
+                MethodInfo mi = it.next();
+                String nDesc = mi.getDescriptor();
+                for (ClassData.Method m : allOriginalMethods) {
+                    String oDesc = DexUtils.getDescriptorOfMethod(in, m);
+                    if (nDesc.equals(oDesc)) {
+                        it.remove();
+                        break;
+                    }
+                }
+            }
         }
 
-        i = virtualMethods.iterator();
-        while (i.hasNext()) {
-            MethodInfo mi = i.next();
-            if (mi.getDescriptor().startsWith("<init>"))
-                i.remove();
-            if (AccessFlags.isAbstract(mi.method.getAccessFlags()))
-                i.remove();
+        // Remove constructors and abstract methods
+        for (List<MethodInfo> mis : allMethodInfos) {
+            Iterator<MethodInfo> i = mis.iterator();
+            while (i.hasNext()) {
+                MethodInfo mi = i.next();
+                if (mi.getDescriptor().startsWith("<init>"))
+                    i.remove();
+                if (AccessFlags.isAbstract(mi.method.getAccessFlags()))
+                    i.remove();
+            }
         }
 
         // Add original methods
@@ -1366,7 +1381,7 @@ public final class DexMerger {
         for (ClassData.Method m : classData.getVirtualMethods())
             virtualMethods.add(new MethodInfo(in, indexMap, m));
 
-        // Hook method <=> Original
+        // Hook method <=> Original method
         swapMethod(info, directMethods, virtualMethods);
 
         sortFields(staticFields);
@@ -1566,10 +1581,7 @@ public final class DexMerger {
         }
 
         String getDescriptor() {
-            MethodId mid = dex.methodIds().get(method.getMethodIndex());
-            String name = dex.strings().get(mid.getNameIndex());
-            ProtoId protoId = dex.protoIds().get(mid.getProtoIndex());
-            return name + DexUtils.getStringOfProtoId(dex, protoId);
+            return DexUtils.getDescriptorOfMethod(dex, method);
         }
     }
 

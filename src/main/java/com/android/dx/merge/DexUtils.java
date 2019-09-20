@@ -1,6 +1,5 @@
 package com.android.dx.merge;
 
-import java.io.*;
 import java.util.*;
 
 import com.android.dex.Annotation;
@@ -15,18 +14,25 @@ import com.android.dx.merge.DexMerger.Injection;
 import com.android.dx.merge.DexMerger.SwapMethod;
 
 public final class DexUtils {
+    public static final String[] AnnotaionVisibilityNames = {"Build", "Runtime", "System"};
+    public static final String ANNOTATION_BLADEINJECT = "Lorg/blade/lib/BladeInject;";
+    public static final String ANNOTATION_BLADESWAP = "Lorg/blade/lib/BladeSwap;";
 
-    public static final String ANNOTATION_BLADEINJECT = "Lorg/blade/hooklib/BladeInject;";
-    public static final String ANNOTATION_BLADESWAP = "Lorg/blade/hooklib/BladeSwap;";
-
-    static public String getStringOfProtoId(Dex dex, ProtoId proto) {
+    static public String getSignatureOfProtoId(Dex dex, ProtoId proto) {
         return dex.readTypeList(proto.getParametersOffset()) + dex.typeNames().get(proto.getReturnTypeIndex());
+    }
+
+    static public String getDescriptorOfMethod(Dex dex, ClassData.Method m) {
+        MethodId mid = dex.methodIds().get(m.getMethodIndex());
+        String name = dex.strings().get(mid.getNameIndex());
+        ProtoId protoId = dex.protoIds().get(mid.getProtoIndex());
+        return name + DexUtils.getSignatureOfProtoId(dex, protoId);
     }
 
     static public int getIndexOfSignature(Dex dex, String signature) {
         int idx = 0;
         for (ProtoId proto : dex.protoIds()) {
-            if (getStringOfProtoId(dex, proto).equals(signature))
+            if (getSignatureOfProtoId(dex, proto).equals(signature))
                 return idx;
             idx++;
         }
@@ -107,15 +113,13 @@ public final class DexUtils {
         return false;
     }
 
-    public static final String[] AnnotaionVisibilityNames = {"Build", "Runtime", "System"};
-
     public static Map<String, Map<String, String>> readAnnotationSet(Dex dex, Dex.Section annoSet) {
         List<String> strings = dex.strings();
         List<String> typeNames = dex.typeNames();
         Map<String, Map<String, String>> result = new HashMap<>();
 
         int numAnno = annoSet.readInt();
-        for (int i = 0 ; i < numAnno; ++i) {
+        for (int i = 0; i < numAnno; ++i) {
             Dex.Section annoItems = dex.open(annoSet.readInt());
             Annotation anno = annoItems.readAnnotation();
 
@@ -124,7 +128,7 @@ public final class DexUtils {
 
             EncodedValueReader reader = anno.getReader();
             int fieldCount = reader.readAnnotation();
-            for (int j = 0 ; j < fieldCount; ++j) {
+            for (int j = 0; j < fieldCount; ++j) {
                 String name = strings.get(reader.readAnnotationName());
                 String value = "";
                 if (reader.peek() == EncodedValueReader.ENCODED_STRING)
@@ -146,55 +150,59 @@ public final class DexUtils {
 
         for (ClassDef classDef : dex.classDefs()) {
 
-            if (classDef.getAnnotationsOffset() != 0) {
+            if (classDef.getAnnotationsOffset() == 0)
+                continue;
 
-                Dex.Section annoDir = dex.open(classDef.getAnnotationsOffset());
+            Dex.Section annoDir = dex.open(classDef.getAnnotationsOffset());
 
-                // Read class annotation
-                Dex.Section annoSet = dex.open(annoDir.readInt());
-                Map<String, Map<String, String>> classAnnos = readAnnotationSet(dex, annoSet);
-                
-                if (classAnnos.containsKey(ANNOTATION_BLADEINJECT) && classAnnos.get(ANNOTATION_BLADEINJECT).containsKey("name")) {
-                    Injection injection = new Injection();
-                    injection.shadowDex = dex;
-                    injection.shadowClassName = typeNames.get(classDef.getTypeIndex());
-                    injection.targetClassName = "L" + classAnnos.get(ANNOTATION_BLADEINJECT).get("name").replace('.', '/') + ";";
+            // Read class annotation
+            int class_annotations_off = annoDir.readInt();
 
-                    // Read method annotation
-                    int annotatedFieldsSize = annoDir.readInt();
-                    int annotatedMethodsSize = annoDir.readInt();
-                    annoDir.readInt(); // Skip annotated parameters size
+            if (class_annotations_off == 0)
+                continue;
 
-                    // Skip fields
-                    for (int i = 0 ; i < annotatedFieldsSize; ++i) {
-                        annoDir.readInt();
-                        annoDir.readInt();
-                    }
+            Dex.Section annoSet = dex.open(class_annotations_off);
+            Map<String, Map<String, String>> classAnnos = readAnnotationSet(dex, annoSet);
 
-                    // Read method annotation
-                    for (int i = 0 ; i < annotatedMethodsSize; ++i) {
-                        int methodIdx = annoDir.readInt();
-                        int annotationsOff = annoDir.readInt();
+            if (classAnnos.containsKey(ANNOTATION_BLADEINJECT) && classAnnos.get(ANNOTATION_BLADEINJECT).containsKey("value")) {
+                Injection injection = new Injection();
+                injection.shadowDex = dex;
+                injection.shadowClassName = typeNames.get(classDef.getTypeIndex());
+                injection.targetClassName = "L" + classAnnos.get(ANNOTATION_BLADEINJECT).get("value").replace('.', '/') + ";";
 
-                        annoSet = dex.open(annotationsOff);
-                        Map<String, Map<String, String>> methodAnnos = readAnnotationSet(dex, annoSet);
+                // Read method annotation
+                int annotatedFieldsSize = annoDir.readInt();
+                int annotatedMethodsSize = annoDir.readInt();
+                annoDir.readInt(); // Skip annotated parameters size
 
-                        if (methodAnnos.containsKey(ANNOTATION_BLADESWAP) && methodAnnos.get(ANNOTATION_BLADESWAP).containsKey("from")) {
-                            MethodId methodId = methodIds.get(methodIdx);
-                            String methodSignature = getStringOfProtoId(dex, protoIds.get(methodId.getProtoIndex()));
-
-                            SwapMethod sm = new SwapMethod(methodAnnos.get(ANNOTATION_BLADESWAP).get("from") + methodSignature, 
-                                strings.get(methodId.getNameIndex()) + methodSignature);
-                            injection.swaps.add(sm);
-                        }
-                    }
-
-                    // Ignore parameter annotation
-
-                    injections.add(injection);
+                // Skip fields
+                for (int i = 0; i < annotatedFieldsSize; ++i) {
+                    annoDir.readInt();
+                    annoDir.readInt();
                 }
+
+                // Read method annotation
+                for (int i = 0; i < annotatedMethodsSize; ++i) {
+                    int methodIdx = annoDir.readInt();
+                    int annotationsOff = annoDir.readInt();
+
+                    annoSet = dex.open(annotationsOff);
+                    Map<String, Map<String, String>> methodAnnos = readAnnotationSet(dex, annoSet);
+
+                    if (methodAnnos.containsKey(ANNOTATION_BLADESWAP) && methodAnnos.get(ANNOTATION_BLADESWAP).containsKey("value")) {
+                        MethodId methodId = methodIds.get(methodIdx);
+                        String methodSignature = getSignatureOfProtoId(dex, protoIds.get(methodId.getProtoIndex()));
+
+                        SwapMethod sm = new SwapMethod(methodAnnos.get(ANNOTATION_BLADESWAP).get("value") + methodSignature,
+                                strings.get(methodId.getNameIndex()) + methodSignature);
+                        injection.swaps.add(sm);
+                    }
+                }
+
+                // Ignore parameter annotation
+
+                injections.add(injection);
             }
-        
         }
 
         return injections;
